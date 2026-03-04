@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --version)",
+      "Bash(git -C /Users/tianyi/Documents/Zheng/Code/telegram-bridge log --oneline -10)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:grammy.dev)",
+      "WebFetch(domain:github.com)",
+      "Bash(codex --help)",
+      "Bash(codex exec --help)",
+      "Bash(npm install)",
+      "Bash(npm run build)",
+      "Bash(node --eval \":*)",
+      "Bash(node -e \"console.log\\(process.version, process.arch, process.platform\\)\")",
+      "Bash(npm ls node-pty)",
+      "Bash(chmod +x /Users/tianyi/Documents/Zheng/Code/telegram-bridge/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper)"
+    ]
+  }
+}
