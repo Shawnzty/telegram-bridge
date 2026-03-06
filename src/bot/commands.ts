@@ -1,8 +1,12 @@
 import { type Bot, type Context, InlineKeyboard } from 'grammy';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { config, AVAILABLE_MODELS } from '../config.js';
+import { config, AVAILABLE_MODELS, REASONING_LEVELS } from '../config.js';
 import type { SessionStore } from '../session/sessionStore.js';
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 function isPathSafe(targetPath: string): boolean {
   const resolved = path.resolve(targetPath);
@@ -115,7 +119,7 @@ export function registerCommands(bot: Bot, store: SessionStore): void {
 
   bot.command('menu', async (ctx) => {
     const session = store.get(ctx.chat.id);
-    const shortCwd = session.cwd.replace(config.basePath, '~');
+    const shortCwd = escapeHtml(session.cwd.replace(config.basePath, '~'));
     const statusIcon = session.isRunning ? '⚡ Running' : '💤 Idle';
 
     let elapsed = '';
@@ -124,23 +128,36 @@ export function registerCommands(bot: Bot, store: SessionStore): void {
       elapsed = ` (${secs}s)`;
     }
 
-    const text = [
-      `🤖 **${session.selectedModel.label}** (${session.selectedModel.cli})`,
-      `📂 ${shortCwd}`,
-      `${statusIcon}${elapsed}`,
-    ].join('\n');
+    const permLabel = session.fullPermissions ? '🔓 Full Access' : '🔒 Safe Mode';
+    const lines = [
+      `🤖 <b>${escapeHtml(session.selectedModel.label)}</b> (${escapeHtml(session.selectedModel.cli)})`,
+    ];
+    if (session.selectedModel.cli === 'codex') {
+      const rl = REASONING_LEVELS.find((r) => r.value === session.reasoningLevel);
+      lines.push(`🧠 Reasoning: ${rl?.label ?? session.reasoningLevel}`);
+    }
+    lines.push(`${permLabel}`);
+    lines.push(`📂 ${shortCwd}`);
+    lines.push(`${statusIcon}${elapsed}`);
 
     const keyboard = new InlineKeyboard()
       .text('🔄 Change Model', 'menu:model')
       .text('📂 Change Folder', 'menu:folder')
-      .row()
-      .text('📋 Status', 'menu:status');
+      .row();
+
+    if (session.selectedModel.cli === 'codex') {
+      keyboard.text('🧠 Reasoning', 'menu:reasoning');
+    }
+
+    const permToggleLabel = session.fullPermissions ? '🔒 Safe Mode' : '🔓 Full Access';
+    keyboard.text(permToggleLabel, 'menu:toggleperm');
+    keyboard.row().text('📋 Status', 'menu:status');
 
     if (session.isRunning) {
       keyboard.text('⏹️ Stop', 'menu:stop');
     }
 
-    await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: keyboard });
   });
 
   bot.command('status', async (ctx) => {
@@ -148,9 +165,14 @@ export function registerCommands(bot: Bot, store: SessionStore): void {
     const lines = [
       `🤖 CLI: ${session.selectedModel.cli}`,
       `🧠 Model: ${session.selectedModel.label} (${session.selectedModel.model})`,
-      `📂 CWD: ${session.cwd}`,
-      `⚡ Running: ${session.isRunning ? 'Yes' : 'No'}`,
     ];
+    if (session.selectedModel.cli === 'codex') {
+      const rl = REASONING_LEVELS.find((r) => r.value === session.reasoningLevel);
+      lines.push(`💡 Reasoning: ${rl?.label ?? session.reasoningLevel}`);
+    }
+    lines.push(session.fullPermissions ? '🔓 Permissions: Full Access' : '🔒 Permissions: Safe Mode');
+    lines.push(`📂 CWD: ${session.cwd}`);
+    lines.push(`⚡ Running: ${session.isRunning ? 'Yes' : 'No'}`);
     if (session.isRunning && session.startedAt) {
       const elapsed = Math.round((Date.now() - session.startedAt.getTime()) / 1000);
       lines.push(`⏱️ Elapsed: ${elapsed}s`);
@@ -205,5 +227,33 @@ export function registerCommands(bot: Bot, store: SessionStore): void {
     }
     session.activeProcess.write(text + '\n');
     await ctx.reply(`Sent: ${text}`);
+  });
+
+  bot.command(['help', 'start'], async (ctx) => {
+    const text = [
+      '<b>Telegram Bridge</b>',
+      'Control Claude Code &amp; Codex CLI remotely.',
+      '',
+      '<b>Navigation</b>',
+      '/menu — Dashboard with quick actions',
+      '/ls — List folders (tap to select)',
+      '/cd &lt;folder&gt; — Change directory',
+      '/pwd — Show current directory',
+      '/new &lt;name&gt; — Create &amp; enter new folder',
+      '',
+      '<b>Model &amp; Config</b>',
+      '/model — Pick model from keyboard',
+      '/status — Show full session info',
+      '',
+      '<b>Process Control</b>',
+      '/stop — Send Ctrl+C (SIGINT)',
+      '/kill — Force kill (SIGKILL)',
+      '/y — Send "y" to stdin',
+      '/n — Send "n" to stdin',
+      '/stdin &lt;text&gt; — Send arbitrary text',
+      '',
+      '<i>Any other text message is sent as a prompt to the active CLI.</i>',
+    ];
+    await ctx.reply(text.join('\n'), { parse_mode: 'HTML' });
   });
 }

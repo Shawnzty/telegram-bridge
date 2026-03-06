@@ -59,6 +59,7 @@ Edit the `AVAILABLE_MODELS` array in `src/config.ts`:
 export const AVAILABLE_MODELS: ModelConfig[] = [
   { label: 'Claude Opus 4.6', cli: 'claude', model: 'claude-opus-4-6', group: 'Claude Code' },
   { label: 'Claude Sonnet 4.5', cli: 'claude', model: 'claude-sonnet-4-5', group: 'Claude Code' },
+  { label: 'GPT-5.4 Codex', cli: 'codex', model: 'gpt-5.4-codex', group: 'Codex' },
   // Add new models here:
   { label: 'My Model', cli: 'codex', model: 'my-model-id', group: 'Codex' },
 ];

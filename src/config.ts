@@ -8,11 +8,21 @@ export interface ModelConfig {
 }
 
 export const AVAILABLE_MODELS: ModelConfig[] = [
-  { label: 'Claude Opus 4.6', cli: 'claude', model: 'claude-opus-4-6', group: 'Claude Code' },
-  { label: 'Claude Sonnet 4.5', cli: 'claude', model: 'claude-sonnet-4-5', group: 'Claude Code' },
+  { label: 'Opus 4.6', cli: 'claude', model: 'claude-opus-4-6', group: 'Claude Code' },
+  { label: 'Sonnet 4.6', cli: 'claude', model: 'claude-sonnet-4-6', group: 'Claude Code' },
+  { label: 'GPT-5.4 Codex', cli: 'codex', model: 'gpt-5.4-codex', group: 'Codex' },
   { label: 'GPT-5.3 Codex', cli: 'codex', model: 'gpt-5.3-codex', group: 'Codex' },
-  { label: 'GPT-4.1 Codex', cli: 'codex', model: 'gpt-4.1-codex', group: 'Codex' },
-  { label: 'o3', cli: 'codex', model: 'o3', group: 'Codex' },
+  { label: 'GPT-5.2 Codex', cli: 'codex', model: 'gpt-5.2-codex', group: 'Codex' },
+  { label: 'GPT-5.1 Codex Max', cli: 'codex', model: 'gpt-5.1-codex-max', group: 'Codex' },
+];
+
+export type ReasoningLevel = 'low' | 'medium' | 'high' | 'extra_high';
+
+export const REASONING_LEVELS: { label: string; value: ReasoningLevel }[] = [
+  { label: '🟢 Low', value: 'low' },
+  { label: '🟡 Medium', value: 'medium' },
+  { label: '🟠 High', value: 'high' },
+  { label: '🔴 Extra High', value: 'extra_high' },
 ];
 
 export const config = {

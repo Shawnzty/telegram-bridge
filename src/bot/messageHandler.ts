@@ -1,4 +1,5 @@
 import type { Bot } from 'grammy';
+import { promises as fs } from 'node:fs';
 import type { SessionStore } from '../session/sessionStore.js';
 import type { ProcessManager } from '../cli/processManager.js';
 import type { OutputStreamer } from '../cli/outputStreamer.js';
@@ -37,11 +38,18 @@ export function registerMessageHandler(
     });
 
     try {
+      const stat = await fs.stat(session.cwd);
+      if (!stat.isDirectory()) {
+        throw new Error(`Working directory is not a directory: ${session.cwd}`);
+      }
+
       const proc = processManager.spawn({
         prompt,
         model: session.selectedModel,
         cwd: session.cwd,
         continueSession: session.lastSessionId ?? undefined,
+        reasoningLevel: session.reasoningLevel,
+        fullPermissions: session.fullPermissions,
       });
 
       store.update(ctx.chat.id, { activeProcess: proc });
@@ -53,11 +61,14 @@ export function registerMessageHandler(
       store.update(ctx.chat.id, {
         isRunning: false,
         activeProcess: null,
+        startedAt: null,
       });
 
       let errorMsg: string;
       if (err.code === 'ENOENT') {
-        errorMsg = `Command '${session.selectedModel.cli}' not found. Make sure it is installed and in PATH.`;
+        errorMsg = err.path === session.cwd
+          ? `Working directory not found: ${session.cwd}`
+          : `Command '${session.selectedModel.cli}' not found. Make sure it is installed and in PATH.`;
       } else {
         errorMsg = `Failed to start: ${err.message ?? err}`;
         if (err.errno) errorMsg += ` (errno: ${err.errno})`;

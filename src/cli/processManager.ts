@@ -1,13 +1,15 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import { execSync } from 'node:child_process';
-import type { ModelConfig } from '../config.js';
+import type { ModelConfig, ReasoningLevel } from '../config.js';
 
 export interface SpawnOptions {
   prompt: string;
   model: ModelConfig;
   cwd: string;
   continueSession?: string;
+  reasoningLevel?: ReasoningLevel;
+  fullPermissions?: boolean;
 }
 
 // Resolve full path to a CLI binary using the user's shell
@@ -38,15 +40,25 @@ export class ProcessManager {
         '--model',
         options.model.model,
         '--verbose',
-        '--dangerously-skip-permissions',
       ];
+      if (options.fullPermissions) {
+        args.push('--dangerously-skip-permissions');
+      }
       if (options.continueSession) {
         args.push('--resume', options.continueSession);
       }
       return { command: getCommandPath('claude'), args };
     } else {
       // Codex CLI
-      const args = ['exec', options.prompt, '-m', options.model.model];
+      const reasoningValue = options.reasoningLevel === 'extra_high'
+        ? 'extra_high'
+        : (options.reasoningLevel ?? 'medium');
+      const permissionArgs = options.fullPermissions
+        ? ['--dangerously-bypass-approvals-and-sandbox']
+        : ['--full-auto'];
+      const args = ['exec', options.prompt, '-m', options.model.model,
+        '-c', `reasoning_effort="${reasoningValue}"`];
+      args.push(...permissionArgs);
       if (options.continueSession) {
         return {
           command: getCommandPath('codex'),
@@ -57,6 +69,9 @@ export class ProcessManager {
             options.prompt,
             '-m',
             options.model.model,
+            '-c',
+            `reasoning_effort="${reasoningValue}"`,
+            ...permissionArgs,
           ],
         };
       }

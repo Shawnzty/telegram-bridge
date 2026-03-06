@@ -1,11 +1,13 @@
 import type { IPty } from 'node-pty';
-import type { ModelConfig } from '../config.js';
+import type { ModelConfig, ReasoningLevel } from '../config.js';
 import { config, getDefaultModelConfig } from '../config.js';
 
 export interface ChatSession {
   chatId: number;
   cwd: string;
   selectedModel: ModelConfig;
+  reasoningLevel: ReasoningLevel;
+  fullPermissions: boolean;
   activeProcess: IPty | null;
   lastSessionId: string | null;
   currentMessageId: number | null;
@@ -25,6 +27,8 @@ export class SessionStore {
         chatId,
         cwd: config.basePath,
         selectedModel: getDefaultModelConfig(),
+        reasoningLevel: 'medium',
+        fullPermissions: true,
         activeProcess: null,
         lastSessionId: null,
         currentMessageId: null,
