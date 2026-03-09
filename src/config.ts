@@ -10,7 +10,7 @@ export interface ModelConfig {
 export const AVAILABLE_MODELS: ModelConfig[] = [
   { label: 'Opus 4.6', cli: 'claude', model: 'claude-opus-4-6', group: 'Claude Code' },
   { label: 'Sonnet 4.6', cli: 'claude', model: 'claude-sonnet-4-6', group: 'Claude Code' },
-  { label: 'GPT-5.4 Codex', cli: 'codex', model: 'gpt-5.4-codex', group: 'Codex' },
+  { label: 'GPT-5.4', cli: 'codex', model: 'gpt-5.4', group: 'Codex' },
   { label: 'GPT-5.3 Codex', cli: 'codex', model: 'gpt-5.3-codex', group: 'Codex' },
   { label: 'GPT-5.2 Codex', cli: 'codex', model: 'gpt-5.2-codex', group: 'Codex' },
   { label: 'GPT-5.1 Codex Max', cli: 'codex', model: 'gpt-5.1-codex-max', group: 'Codex' },

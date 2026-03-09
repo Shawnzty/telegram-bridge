@@ -108,31 +108,59 @@ export class OutputStreamer {
 
     const header = buildHeader(session);
     const body = session.outputBuffer;
-    const displayText = `${header}\n\n<pre>${escapeHtml(body)}</pre>\n\n🔄`;
+    const displayText = this.renderOutputMessage(header, body, { streaming: true });
 
     if (displayText.length <= config.maxMessageLength) {
       await this.editIfChanged(api, chatId, session.currentMessageId, displayText);
-    } else {
-      // Finalize current message and start a new one
-      const breakPoint = this.findBreakPoint(body, config.maxMessageLength - header.length - 50);
-      const finalBody = body.slice(0, breakPoint);
-      const overflow = body.slice(breakPoint);
+      return;
+    }
 
-      // Finalize current message
-      const finalText = `${header}\n\n<pre>${escapeHtml(finalBody)}</pre>`;
-      await this.editIfChanged(api, chatId, session.currentMessageId, finalText);
+    const firstSplit = this.findSafeBreakIndex(
+      body,
+      this.maxEscapedBodyLength(header, { streaming: false }),
+    );
+    const firstBody = body.slice(0, firstSplit);
+    let remaining = body.slice(firstSplit);
 
-      // Start a new message
-      const newText = `${header}\n\n<pre>${escapeHtml(overflow)}</pre>\n\n🔄`;
+    await this.editIfChanged(
+      api,
+      chatId,
+      session.currentMessageId,
+      this.renderOutputMessage(header, firstBody),
+    );
+
+    if (!remaining) {
+      session.outputBuffer = firstBody;
+      return;
+    }
+
+    let lastChunk = '';
+    while (remaining.length > 0) {
+      const split = this.findSafeBreakIndex(
+        remaining,
+        this.maxEscapedBodyLength(header, { streaming: true }),
+      );
+      const chunk = remaining.slice(0, split);
+      remaining = remaining.slice(split);
+
       try {
-        const sent = await api.sendMessage(chatId, newText, { parse_mode: 'HTML' });
+        const sent = await api.sendMessage(
+          chatId,
+          this.renderOutputMessage(header, chunk, { streaming: true }),
+          { parse_mode: 'HTML' },
+        );
         session.currentMessageId = sent.message_id;
         session.messageHistory.push(sent.message_id);
-        session.outputBuffer = overflow;
-        this.lastEditHash.delete(chatId);
+        lastChunk = chunk;
       } catch (err) {
-        console.error('Failed to send new message:', err);
+        console.error('Failed to send new message chunk:', err);
+        break;
       }
+    }
+
+    if (lastChunk) {
+      session.outputBuffer = lastChunk;
+      this.lastEditHash.delete(chatId);
     }
   }
 
@@ -146,35 +174,54 @@ export class OutputStreamer {
     const header = buildHeader(session);
     const statusEmoji = exitCode === 0 ? '✅' : '❌';
     const body = session.outputBuffer;
+    const statusLine = `${statusEmoji} Exited (code ${exitCode})`;
 
-    const finalText = `${header}\n\n<pre>${escapeHtml(body)}</pre>\n\n${statusEmoji} Exited (code ${exitCode})`;
-
-    if (finalText.length <= config.maxMessageLength) {
-      if (session.currentMessageId) {
-        await this.editIfChanged(api, chatId, session.currentMessageId, finalText);
-      }
-    } else {
-      // Split: finalize current, send remainder as new message
-      if (session.currentMessageId) {
-        const breakPoint = this.findBreakPoint(body, config.maxMessageLength - header.length - 50);
-        const firstPart = body.slice(0, breakPoint);
-        const secondPart = body.slice(breakPoint);
-
-        await this.editIfChanged(
-          api,
-          chatId,
-          session.currentMessageId,
-          `${header}\n\n<pre>${escapeHtml(firstPart)}</pre>`,
-        );
-
+    if (!session.currentMessageId) {
+      const chunks = this.splitBodyForLimit(
+        body,
+        this.maxEscapedBodyLength(header, { statusLine }),
+      );
+      for (let i = 0; i < chunks.length; i++) {
+        const isLast = i === chunks.length - 1;
         try {
           await api.sendMessage(
             chatId,
-            `<pre>${escapeHtml(secondPart)}</pre>\n\n${statusEmoji} Exited (code ${exitCode})`,
+            this.renderOutputMessage(header, chunks[i], {
+              statusLine: isLast ? statusLine : undefined,
+            }),
             { parse_mode: 'HTML' },
           );
         } catch (err) {
-          console.error('Failed to send final message:', err);
+          console.error('Failed to send final message chunk:', err);
+          break;
+        }
+      }
+    } else {
+      const chunks = this.splitBodyForLimit(
+        body,
+        this.maxEscapedBodyLength(header, { statusLine }),
+      );
+      const firstChunk = chunks.shift() ?? '';
+      const firstText = this.renderOutputMessage(
+        header,
+        firstChunk,
+        chunks.length === 0 ? { statusLine } : undefined,
+      );
+      await this.editIfChanged(api, chatId, session.currentMessageId, firstText);
+
+      for (let i = 0; i < chunks.length; i++) {
+        const isLast = i === chunks.length - 1;
+        try {
+          await api.sendMessage(
+            chatId,
+            this.renderOutputMessage(header, chunks[i], {
+              statusLine: isLast ? statusLine : undefined,
+            }),
+            { parse_mode: 'HTML' },
+          );
+        } catch (err) {
+          console.error('Failed to send final message chunk:', err);
+          break;
         }
       }
     }
@@ -186,6 +233,65 @@ export class OutputStreamer {
       outputBuffer: '',
       currentMessageId: null,
     });
+  }
+
+  private renderOutputMessage(
+    header: string,
+    body: string,
+    options?: { streaming?: boolean; statusLine?: string },
+  ): string {
+    let text = `${header}\n\n<pre>${escapeHtml(body)}</pre>`;
+    if (options?.streaming) {
+      text += '\n\n🔄';
+    } else if (options?.statusLine) {
+      text += `\n\n${options.statusLine}`;
+    }
+    return text;
+  }
+
+  private maxEscapedBodyLength(
+    header: string,
+    options?: { streaming?: boolean; statusLine?: string },
+  ): number {
+    const wrapper = this.renderOutputMessage(header, '', options).length;
+    return Math.max(1, config.maxMessageLength - wrapper);
+  }
+
+  private splitBodyForLimit(body: string, maxEscapedBodyLength: number): string[] {
+    if (!body) return [''];
+
+    const chunks: string[] = [];
+    let remaining = body;
+    while (remaining.length > 0) {
+      const split = this.findSafeBreakIndex(remaining, maxEscapedBodyLength);
+      chunks.push(remaining.slice(0, split));
+      remaining = remaining.slice(split);
+    }
+    return chunks;
+  }
+
+  private findSafeBreakIndex(text: string, maxEscapedLen: number): number {
+    if (!text) return 0;
+    let escapedLen = 0;
+    let i = 0;
+    let lastNewline = -1;
+
+    while (i < text.length) {
+      const ch = text[i];
+      const charLen = ch === '&' ? 5 : (ch === '<' || ch === '>' ? 4 : 1);
+      if (escapedLen + charLen > maxEscapedLen) break;
+      escapedLen += charLen;
+      if (ch === '\n') lastNewline = i;
+      i += 1;
+    }
+
+    if (i === 0) return 1;
+
+    const half = Math.floor(i / 2);
+    if (lastNewline >= half) {
+      return lastNewline + 1;
+    }
+    return i;
   }
 
   private async editIfChanged(
@@ -252,11 +358,6 @@ export class OutputStreamer {
     }
   }
 
-  private findBreakPoint(text: string, maxLen: number): number {
-    if (text.length <= maxLen) return text.length;
-    const lastNewline = text.lastIndexOf('\n', maxLen);
-    return lastNewline > maxLen * 0.5 ? lastNewline : maxLen;
-  }
 }
 
 function sleep(ms: number): Promise<void> {
