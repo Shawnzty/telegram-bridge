@@ -108,6 +108,32 @@ export class ProcessManager {
     return ptyProcess;
   }
 
+  spawnShell(command: string, cwd: string): IPty {
+    const cleanEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined) {
+        cleanEnv[key] = value;
+      }
+    }
+    cleanEnv.TERM = 'xterm-256color';
+    cleanEnv.NO_COLOR = '1';
+    cleanEnv.FORCE_COLOR = '0';
+
+    const shell = process.env.SHELL ?? '/bin/zsh';
+    console.log(`Spawning shell: ${shell} -c ${command}`);
+    console.log(`  CWD: ${cwd}`);
+
+    const ptyProcess = pty.spawn(shell, ['-c', command], {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 40,
+      cwd,
+      env: cleanEnv,
+    });
+
+    return ptyProcess;
+  }
+
   sendStdin(proc: IPty, text: string): void {
     proc.write(text);
   }

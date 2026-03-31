@@ -32,7 +32,7 @@ bot.use(async (ctx, next) => {
 });
 
 // Register handlers
-registerCommands(bot, store);
+registerCommands(bot, store, processManager, outputStreamer);
 registerCallbackHandlers(bot, store);
 registerMessageHandler(bot, store, processManager, outputStreamer);
 

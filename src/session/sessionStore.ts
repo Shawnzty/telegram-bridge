@@ -15,6 +15,7 @@ export interface ChatSession {
   messageHistory: number[];
   isRunning: boolean;
   startedAt: Date | null;
+  headerOverride: string | null;
 }
 
 export class SessionStore {
@@ -36,6 +37,7 @@ export class SessionStore {
         messageHistory: [],
         isRunning: false,
         startedAt: null,
+        headerOverride: null,
       };
       this.sessions.set(chatId, session);
     }

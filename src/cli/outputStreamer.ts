@@ -20,6 +20,7 @@ function detectConfirmationPrompt(text: string): boolean {
 }
 
 function buildHeader(session: ChatSession): string {
+  if (session.headerOverride) return session.headerOverride;
   const shortCwd = session.cwd.replace(config.basePath, '~');
   return `🤖 ${session.selectedModel.cli} (${session.selectedModel.model}) | ${shortCwd}`;
 }
@@ -232,6 +233,7 @@ export class OutputStreamer {
       activeProcess: null,
       outputBuffer: '',
       currentMessageId: null,
+      headerOverride: null,
     });
   }
 

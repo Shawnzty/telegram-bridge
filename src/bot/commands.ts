@@ -3,6 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { config, AVAILABLE_MODELS, REASONING_LEVELS } from '../config.js';
 import type { SessionStore } from '../session/sessionStore.js';
+import type { ProcessManager } from '../cli/processManager.js';
+import type { OutputStreamer } from '../cli/outputStreamer.js';
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -14,7 +16,12 @@ function isPathSafe(targetPath: string): boolean {
   return resolved === base || resolved.startsWith(base + path.sep);
 }
 
-export function registerCommands(bot: Bot, store: SessionStore): void {
+export function registerCommands(
+  bot: Bot,
+  store: SessionStore,
+  processManager: ProcessManager,
+  outputStreamer: OutputStreamer,
+): void {
   bot.command('ls', async (ctx) => {
     const session = store.get(ctx.chat.id);
     const targetDir = session.cwd;
@@ -229,6 +236,78 @@ export function registerCommands(bot: Bot, store: SessionStore): void {
     await ctx.reply(`Sent: ${text}`);
   });
 
+  bot.command('sh', async (ctx) => {
+    const session = store.get(ctx.chat.id);
+
+    if (session.isRunning) {
+      return ctx.reply('A process is already running. Use /stop or /kill first.');
+    }
+
+    let rawArgs = ctx.match;
+    if (!rawArgs) {
+      return ctx.reply('Usage: /sh <command>\nExample: /sh git status\nOptional: /sh -d /path command');
+    }
+
+    // Parse optional -d flag for directory override
+    let cwd = session.cwd;
+    const dirMatch = rawArgs.match(/^-d\s+(\S+)\s+(.+)$/s);
+    if (dirMatch) {
+      const targetDir = dirMatch[1];
+      const resolved = path.isAbsolute(targetDir)
+        ? path.resolve(targetDir)
+        : path.resolve(session.cwd, targetDir);
+
+      if (!isPathSafe(resolved)) {
+        return ctx.reply('⛔ Path must be within the base directory.');
+      }
+
+      try {
+        const stat = await fs.stat(resolved);
+        if (!stat.isDirectory()) {
+          return ctx.reply('Not a directory: ' + resolved);
+        }
+      } catch {
+        return ctx.reply('Directory not found: ' + resolved);
+      }
+
+      cwd = resolved;
+      rawArgs = dirMatch[2];
+    }
+
+    const shortCwd = cwd.replace(config.basePath, '~');
+    const headerText = `$ ${escapeHtml(rawArgs.length > 60 ? rawArgs.slice(0, 57) + '...' : rawArgs)} | ${escapeHtml(shortCwd)}`;
+
+    const sentMessage = await ctx.reply(`${headerText}\n\n<pre>Starting...</pre>`, { parse_mode: 'HTML' });
+
+    store.update(ctx.chat.id, {
+      headerOverride: `$ ${rawArgs.length > 60 ? rawArgs.slice(0, 57) + '...' : rawArgs} | ${shortCwd}`,
+      currentMessageId: sentMessage.message_id,
+      messageHistory: [sentMessage.message_id],
+      outputBuffer: '',
+      isRunning: true,
+      startedAt: new Date(),
+    });
+
+    try {
+      const proc = processManager.spawnShell(rawArgs, cwd);
+      store.update(ctx.chat.id, { activeProcess: proc });
+      outputStreamer.attach(ctx.api, ctx.chat.id, store, proc);
+    } catch (err: any) {
+      store.update(ctx.chat.id, {
+        isRunning: false,
+        activeProcess: null,
+        startedAt: null,
+        headerOverride: null,
+      });
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        sentMessage.message_id,
+        `${headerText}\n\n<pre>${escapeHtml(err.message)}</pre>`,
+        { parse_mode: 'HTML' },
+      );
+    }
+  });
+
   bot.command(['help', 'start'], async (ctx) => {
     const text = [
       '<b>Telegram Bridge</b>',
@@ -244,6 +323,10 @@ export function registerCommands(bot: Bot, store: SessionStore): void {
       '<b>Model &amp; Config</b>',
       '/model — Pick model from keyboard',
       '/status — Show full session info',
+      '',
+      '<b>Shell</b>',
+      '/sh &lt;command&gt; — Run a shell command',
+      '/sh -d &lt;path&gt; &lt;cmd&gt; — Run in specific directory',
       '',
       '<b>Process Control</b>',
       '/stop — Send Ctrl+C (SIGINT)',
