@@ -240,6 +240,15 @@ export function registerCommands(
     const session = store.get(ctx.chat.id);
 
     if (session.isRunning) {
+      // If a /sh process is running, forward input as stdin
+      if (session.headerOverride && session.activeProcess) {
+        const input = ctx.match;
+        if (!input) {
+          return ctx.reply('Usage: /sh <input> to send input to running process');
+        }
+        session.activeProcess.write(input + '\n');
+        return;
+      }
       return ctx.reply('A process is already running. Use /stop or /kill first.');
     }
 

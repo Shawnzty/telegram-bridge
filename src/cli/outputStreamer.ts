@@ -19,6 +19,27 @@ function detectConfirmationPrompt(text: string): boolean {
   return CONFIRMATION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+/**
+ * Simulate terminal carriage-return behaviour.
+ * `\r` (not followed by `\n`) moves the cursor to the start of the line,
+ * so the next text overwrites what was there.  Progress bars emit hundreds
+ * of such overwrites per second — we collapse them to just the latest one.
+ */
+function processCarriageReturns(buffer: string): string {
+  const lines = buffer.split('\n');
+  return lines
+    .map((line) => {
+      if (!line.includes('\r')) return line;
+      const segments = line.split('\r');
+      // Last non-empty segment is what the terminal would display
+      for (let i = segments.length - 1; i >= 0; i--) {
+        if (segments[i].length > 0) return segments[i];
+      }
+      return '';
+    })
+    .join('\n');
+}
+
 function buildHeader(session: ChatSession): string {
   if (session.headerOverride) return session.headerOverride;
   const shortCwd = session.cwd.replace(config.basePath, '~');
@@ -44,7 +65,8 @@ function simpleHash(text: string): number {
 export class OutputStreamer {
   private editTimers = new Map<number, ReturnType<typeof setInterval>>();
   private lastEditHash = new Map<number, number>();
-  private backoffMs = new Map<number, number>();
+  /** Timestamp (ms) until which API calls should be skipped for a chat */
+  private backoffUntil = new Map<number, number>();
 
   attach(
     api: Api<RawApi>,
@@ -57,6 +79,8 @@ export class OutputStreamer {
     process.onData((data: string) => {
       const cleaned = stripAnsi(data);
       session.outputBuffer += cleaned;
+      // Collapse carriage-return overwrites (progress bars, spinners, etc.)
+      session.outputBuffer = processCarriageReturns(session.outputBuffer);
 
       // Check for confirmation prompts in the tail of the buffer
       const tail = session.outputBuffer.slice(-300);
@@ -96,14 +120,67 @@ export class OutputStreamer {
       this.editTimers.delete(chatId);
     }
     this.lastEditHash.delete(chatId);
-    this.backoffMs.delete(chatId);
+    this.backoffUntil.delete(chatId);
   }
+
+  // ---------------------------------------------------------------------------
+  //  Rate-limited API call wrapper
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Execute an API call with 429 detection, backoff, and single retry.
+   * Returns `null` when the call is suppressed or fails after retry.
+   */
+  private async rateLimitedCall<T>(
+    chatId: number,
+    apiCall: () => Promise<T>,
+    { silenceNotModified = false }: { silenceNotModified?: boolean } = {},
+  ): Promise<T | null> {
+    try {
+      const result = await apiCall();
+      this.backoffUntil.set(chatId, 0);
+      return result;
+    } catch (error: any) {
+      const description: string = error?.description ?? error?.message ?? '';
+
+      // "message is not modified" is harmless — suppress silently
+      if (silenceNotModified && description.includes('message is not modified')) {
+        return null;
+      }
+
+      if (error?.error_code === 429 || description.includes('Too Many Requests')) {
+        const retryAfter = error?.parameters?.retry_after ?? 5;
+        this.backoffUntil.set(chatId, Date.now() + retryAfter * 1000);
+        console.warn(`Rate limited for chat ${chatId}, backing off ${retryAfter}s`);
+        await sleep(retryAfter * 1000);
+        // Retry once
+        try {
+          const result = await apiCall();
+          this.backoffUntil.set(chatId, 0);
+          return result;
+        } catch {
+          return null; // give up
+        }
+      }
+
+      console.error('API error:', description);
+      return null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  //  Flush helpers
+  // ---------------------------------------------------------------------------
 
   private async flushBuffer(
     api: Api<RawApi>,
     chatId: number,
     store: SessionStore,
   ): Promise<void> {
+    // Skip flush if we're still in a rate-limit backoff period
+    const until = this.backoffUntil.get(chatId) ?? 0;
+    if (Date.now() < until) return;
+
     const session = store.get(chatId);
     if (!session.outputBuffer || !session.currentMessageId) return;
 
@@ -144,18 +221,20 @@ export class OutputStreamer {
       const chunk = remaining.slice(0, split);
       remaining = remaining.slice(split);
 
-      try {
-        const sent = await api.sendMessage(
+      const sent = await this.rateLimitedCall(chatId, () =>
+        api.sendMessage(
           chatId,
           this.renderOutputMessage(header, chunk, { streaming: true }),
           { parse_mode: 'HTML' },
-        );
+        ),
+      );
+
+      if (sent) {
         session.currentMessageId = sent.message_id;
         session.messageHistory.push(sent.message_id);
         lastChunk = chunk;
-      } catch (err) {
-        console.error('Failed to send new message chunk:', err);
-        break;
+      } else {
+        break; // rate-limited or failed — stop sending chunks this cycle
       }
     }
 
@@ -184,18 +263,16 @@ export class OutputStreamer {
       );
       for (let i = 0; i < chunks.length; i++) {
         const isLast = i === chunks.length - 1;
-        try {
-          await api.sendMessage(
+        const sent = await this.rateLimitedCall(chatId, () =>
+          api.sendMessage(
             chatId,
             this.renderOutputMessage(header, chunks[i], {
               statusLine: isLast ? statusLine : undefined,
             }),
             { parse_mode: 'HTML' },
-          );
-        } catch (err) {
-          console.error('Failed to send final message chunk:', err);
-          break;
-        }
+          ),
+        );
+        if (!sent) break;
       }
     } else {
       const chunks = this.splitBodyForLimit(
@@ -212,18 +289,16 @@ export class OutputStreamer {
 
       for (let i = 0; i < chunks.length; i++) {
         const isLast = i === chunks.length - 1;
-        try {
-          await api.sendMessage(
+        const sent = await this.rateLimitedCall(chatId, () =>
+          api.sendMessage(
             chatId,
             this.renderOutputMessage(header, chunks[i], {
               statusLine: isLast ? statusLine : undefined,
             }),
             { parse_mode: 'HTML' },
-          );
-        } catch (err) {
-          console.error('Failed to send final message chunk:', err);
-          break;
-        }
+          ),
+        );
+        if (!sent) break;
       }
     }
 
@@ -236,6 +311,10 @@ export class OutputStreamer {
       headerOverride: null,
     });
   }
+
+  // ---------------------------------------------------------------------------
+  //  Rendering & splitting
+  // ---------------------------------------------------------------------------
 
   private renderOutputMessage(
     header: string,
@@ -296,6 +375,10 @@ export class OutputStreamer {
     return i;
   }
 
+  // ---------------------------------------------------------------------------
+  //  Edit helpers
+  // ---------------------------------------------------------------------------
+
   private async editIfChanged(
     api: Api<RawApi>,
     chatId: number,
@@ -305,42 +388,12 @@ export class OutputStreamer {
     const hash = simpleHash(text);
     if (this.lastEditHash.get(chatId) === hash) return;
     this.lastEditHash.set(chatId, hash);
-    await this.throttledEdit(api, chatId, messageId, text);
-  }
 
-  private async throttledEdit(
-    api: Api<RawApi>,
-    chatId: number,
-    messageId: number,
-    text: string,
-  ): Promise<void> {
-    try {
-      await api.editMessageText(chatId, messageId, text, { parse_mode: 'HTML' });
-      this.backoffMs.set(chatId, 0);
-    } catch (error: any) {
-      const description = error?.description ?? error?.message ?? '';
-
-      if (description.includes('message is not modified')) {
-        // Silently ignore
-        return;
-      }
-
-      if (error?.error_code === 429 || description.includes('Too Many Requests')) {
-        const retryAfter = error?.parameters?.retry_after ?? 5;
-        const backoff = retryAfter * 1000;
-        this.backoffMs.set(chatId, backoff);
-        console.warn(`Rate limited, backing off ${backoff}ms`);
-        await sleep(backoff);
-        // Retry once
-        try {
-          await api.editMessageText(chatId, messageId, text, { parse_mode: 'HTML' });
-        } catch {
-          // Give up on this edit
-        }
-      } else {
-        console.error('Edit error:', description);
-      }
-    }
+    await this.rateLimitedCall(
+      chatId,
+      () => api.editMessageText(chatId, messageId, text, { parse_mode: 'HTML' }),
+      { silenceNotModified: true },
+    );
   }
 
   private async sendConfirmationButtons(
@@ -359,7 +412,6 @@ export class OutputStreamer {
       console.error('Failed to send confirmation buttons:', err);
     }
   }
-
 }
 
 function sleep(ms: number): Promise<void> {
